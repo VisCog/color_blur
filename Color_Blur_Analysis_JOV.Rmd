@@ -1,0 +1,698 @@
+---
+title: "Color Blur Object Project"
+author: "Geoff Boynton and Ione Fine"
+date: "9/21/26"
+output: html_document
+---
+
+Knit this document to generate an HTML file showing the statistics in the paper.
+
+Trial-level responses were analyzed using a signal-detection-theoretic (SDT) generalized linear mixed-effects model, rather than modeling raw accuracy directly. We fit the SDT model directly to the trial-level yes/no responses (DeCarlo, 1998; Rouder & Lu, 2005), using the reconstructed stimulus identity ("signal present" vs. "signal absent") as a predictor. 
+
+For each blur experiment, diopter was treated as a categorical factor, allowing sensitivity to vary freely across the tested blur levels rather than imposing a linear trend. A mixed-effects probit regression of the form `resp ~ signal * diopter * color + (1 | subject)` was fit by maximum likelihood in `lme4`. On the probit scale, the signal-present minus signal-absent contrast is model-based d'.
+
+Interactions of `signal` with `diopter` and/or `color` therefore test whether sensitivity changes with blur differs between color and grayscale images. Terms not involving `signal` describe changes in response criterion. The subject random intercept allows criterion to vary across participants. A subject-specific random slope for `signal` was initially considered, but the random-effects structure was simplified after it produced a singular fit. Statistical significance of the fixed effects was evaluated using Type II Wald chi-square tests (`car::Anova`).
+
+For the post-hoc analysis, blur was grouped into low (0–2 diopters), medium (3–5 diopters), and high (6–8 diopters) ranges. A separate grouped-blur SDT model was fit for each experiment, and estimated marginal means were used to calculate the interaction contrast corresponding to d'_color minus d'_grayscale within each blur range. P-values were adjusted across the three comparisons using the Holm–Bonferroni procedure. Both blur experiments were analyzed automatically using the same function, ensuring that Exp1 and Exp2 received identical preprocessing, model fitting, contrasts, and output formatting.
+
+Note, the names for the experiments differ between the data and the paper:
+
+            Paper              Data
+        Experiment 1           Exp3
+        Experiment 2           Exp1
+        Experiment 3           Exp2
+        
+
+```{r message = FALSE, warning = FALSE, echo = FALSE }
+# Packages
+library(dplyr)
+library(ggplot2)
+library(lme4)
+library(lmerTest)  # glmer ok; p-values from LRTs
+library(car)       # Type II/III Anova
+library(broom.mixed)
+library(emmeans)  # for post-hoc stuff
+
+library(knitr)
+library(kableExtra)
+library(readxl)
+
+
+```
+
+
+```{r echo = F}
+
+# Load in the data and convert the factor color from TRUE and FALSE to 'color' and 'bw'
+
+# Read the spreadsheet from the same folder as this R Markdown file.
+# This makes the analysis portable: keep all_data.xlsx beside the .Rmd file.
+
+# Set this to your local directory
+dataDr <- 'C:/Users/Geoff Boynton/Documents/text/papers/Color_object_blur'
+
+all_data <- read_excel(file.path(dataDr,'all_data.xlsx'))
+
+# Recode 'color' (TRUE/FALSE -> "color"/"bw"), put "color" first.
+# Also reconstruct ground-truth stimulus identity ('signal') for the SDT
+# model: a trial is signal-present if it was a hit (resp & correct) or a
+# miss (!resp & !correct), i.e. whenever resp == correct.
+all_data <- all_data %>%
+  mutate(
+    color   = factor(ifelse(color, "color", "bw"), levels = c("color", "bw")),
+    resp    = as.logical(resp),
+    correct = as.logical(correct),
+    signal  = factor(resp == correct, levels = c(FALSE, TRUE),
+                      labels = c("absent", "present"))
+  )
+
+```
+
+
+```{r echo = F}
+# Experiment 3 (No blur, Experiment 1 in the paper) Percent Correct analysis
+# Filter to Exp3
+exp3_data <- all_data %>%
+  filter(exp == "Exp3") %>%
+  # diopter is not used as a predictor in the Exp3 model, but keep it
+  # numeric for consistency with the Exp1/Exp2 data below
+  mutate(diopter = as.numeric(diopter))
+
+# SDT mixed model: resp ~ signal * color, probit link, with subject as a
+# random effect factor (random intercept + random signal slope so that
+# both criterion and sensitivity can vary across subjects). The
+# 'signal:color' term tests whether d' differs between color and
+# grayscale.
+model <- glmer(
+  resp ~ signal * color + (1 + signal | subId),
+  data = exp3_data,
+  family = binomial(link = "probit"),
+  control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+)
+
+# Descriptive percent correct, for reference / sanity check only
+exp3_pc<- exp3_data %>%
+  group_by(color) %>%
+  summarise(mean_correct = mean(correct, na.rm = TRUE), .groups = "drop")
+
+# Type II Wald chi-square tests. The 'signal:color' row is the SDT-based
+# test of whether d' differs between color and grayscale.
+exp3_pc_out <- Anova(model, type = 2, test.statistic = "Chisq")
+
+nSubs <- length(unique(exp3_data$subId))
+```
+
+
+```{r echo = F}
+# Experiment 3: (Experiment 1 in the paper) RT analysis
+exp3_rt <-tapply(exp3_data$rt,exp3_data$color,mean)
+exp3_rt_out <- anova(lmer(rt ~ color + (1|subId),data = exp3_data))
+
+```
+## Experiment 1:
+
+`r nSubs` participants
+
+"Mean accuracy was `r round(100*exp3_pc[1,2],1)` percent for color images and `r round(100*exp3_pc[2,2],1)` percent for grayscale images. The SDT mixed-effects model revealed no significant difference in sensitivity between color and grayscale images ($\chi^2$(`r exp3_pc_out$Df[3]`) = `r round(exp3_pc_out[3,1],2)`, p = `r round(exp3_pc_out[3,3],4)`). Mean response times were `r round(exp3_rt[1],2)` seconds for color images and `r round(exp3_rt[2],2)` seconds for grayscale images. A logistic mixed-effects model revealed no significant effect of color on RTs ($F$(`r exp3_rt_out$NumDF[1]`,`r round(exp3_rt_out$DenDF[1])`) = `r round(exp3_rt_out[1,5],4)`, p = `r round(exp3_rt_out[1,6],4)`)."
+
+
+```{r echo = F}
+
+# count the images that exceed threshold for experiment 3.
+pcThresh <- 0.75
+
+imgIds <- unique(exp3_data$idnum)
+nImages <- length(unique(exp3_data$idnum))
+
+count <- sum(!duplicated(exp3_data$idnum) &
+             exp3_data$pc >= pcThresh)
+```
+
+## Image Selection
+
+"To ensure reliable recognition in the blur experiments, we excluded any images for which fewer than `r pcThresh*100` percent of participants responded correctly across both the color and gray conditions of Experiment 1. This eliminated `r nImages-count` of the `r nImages` images (~`r round(100*(nImages-count)/nImages)`) percent with `r count` images remaining."
+
+```{r blur-analysis-function, echo=FALSE}
+# Analyze one blur experiment. The same function is called for Exp1 and Exp2,
+# so the two analyses cannot drift apart because of copy/paste changes.
+analyze_blur_experiment <- function(currentExp, all_data, pcThresh) {
+
+  # Filter to the requested experiment and retain images that passed the
+  # recognition threshold in the image-selection experiment.
+  exp_data <- all_data %>%
+    filter(exp == currentExp, pc > pcThresh) %>%
+    mutate(
+      diopter = factor(
+        diopter,
+        levels = sort(unique(as.numeric(as.character(diopter))))
+      )
+    )
+
+  if (nrow(exp_data) == 0) {
+    stop("No observations remained for ", currentExp,
+         " after applying pc > ", pcThresh)
+  }
+
+  # Primary trial-level SDT GLMM. The subject random intercept allows
+  # response criterion to vary across participants. A random signal slope
+  # was omitted because the fuller structure produced a singular fit.
+  model <- glmer(
+    resp ~ signal * diopter * color + (1 | subId),
+    data = exp_data,
+    family = binomial(link = "probit"),
+    control = glmerControl(
+      optimizer = "bobyqa",
+      optCtrl = list(maxfun = 2e5)
+    )
+  )
+
+  # Type II Wald chi-square tests.
+  anova_out <- Anova(model, type = 2, test.statistic = "Chisq")
+
+  # Model-based d' at every tested diopter x color combination.
+  emm_signal <- emmeans(
+    model,
+    ~ signal | diopter * color,
+    type = "link"
+  )
+
+  dprime_plot_data <- contrast(
+    emm_signal,
+    method = "revpairwise"       # present - absent = d'
+  ) %>%
+    as.data.frame() %>%
+    mutate(
+      lower = estimate - SE,
+      upper = estimate + SE,
+      diopter_num = as.numeric(as.character(diopter))
+    )
+
+  dprime_plot <- ggplot(
+    dprime_plot_data,
+    aes(
+      x = diopter_num,
+      y = estimate,
+      group = color,
+      color = color,
+      fill = color
+    )
+  ) +
+    geom_line(linewidth = 1) +
+    geom_point(shape = 21, size = 3, color = "black") +
+    geom_errorbar(
+      aes(ymin = lower, ymax = upper),
+      width = 0.15,
+      linewidth = 0.6
+    ) +
+    labs(
+      x = "Diopter",
+      y = "Predicted d' (+/- 1 SE)",
+      color = "Stimulus",
+      fill = "Stimulus",
+      title = currentExp
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(panel.grid.minor = element_blank())
+
+  # Optional post-hoc contrasts at every individual diopter level.
+  emm_signal_by_diopter <- emmeans(
+    model,
+    ~ signal * color | diopter
+  )
+
+  dprime_diff_by_diopter <- contrast(
+    emm_signal_by_diopter,
+    # present - absent gives d'; color - bw gives the color advantage
+    interaction = c("revpairwise", "pairwise")
+  )
+
+  color_results_by_diopter <- summary(
+    dprime_diff_by_diopter,
+    adjust = "holm",
+    infer = c(TRUE, TRUE),
+    level = 0.95
+  ) %>%
+    as.data.frame()
+
+  # Group blur into low, medium, and high ranges for the planned post-hoc
+  # comparisons reported in the text.
+  exp_data_grouped <- exp_data %>%
+    mutate(
+      diopter_num = as.numeric(as.character(diopter)),
+      blur_group = case_when(
+        diopter_num >= 0 & diopter_num <= 2 ~ "0-2",
+        diopter_num >= 3 & diopter_num <= 5 ~ "3-5",
+        diopter_num >= 6 & diopter_num <= 8 ~ "6-8",
+        TRUE ~ NA_character_
+      ),
+      blur_group = factor(
+        blur_group,
+        levels = c("0-2", "3-5", "6-8")
+      )
+    ) %>%
+    filter(!is.na(blur_group))
+
+  model_grouped <- glmer(
+    resp ~ signal * blur_group * color + (1 | subId),
+    data = exp_data_grouped,
+    family = binomial(link = "probit"),
+    control = glmerControl(
+      optimizer = "bobyqa",
+      optCtrl = list(maxfun = 2e5)
+    )
+  )
+
+  anova_grouped <- Anova(
+    model_grouped,
+    type = 2,
+    test.statistic = "Chisq"
+  )
+
+  emm_grouped <- emmeans(
+    model_grouped,
+    ~ signal * color | blur_group
+  )
+
+  dprime_diff_grouped <- contrast(
+    emm_grouped,
+    # This contrast is (present - absent)_color -
+    #                  (present - absent)_grayscale.
+    interaction = c("revpairwise", "pairwise")
+  )
+
+  color_results_grouped <- summary(
+    dprime_diff_grouped,
+    adjust = "holm",
+    infer = c(TRUE, TRUE),
+    level = 0.95
+  ) %>%
+    as.data.frame()
+
+  list(
+    experiment = currentExp,
+    data = exp_data,
+    model = model,
+    anova = anova_out,
+    dprime_plot_data = dprime_plot_data,
+    dprime_plot = dprime_plot,
+    color_results_by_diopter = color_results_by_diopter,
+    grouped_data = exp_data_grouped,
+    grouped_model = model_grouped,
+    grouped_anova = anova_grouped,
+    color_results_grouped = color_results_grouped
+  )
+}
+
+# Run both experiments with identical code.
+experiment_names <- c("Exp1", "Exp2")  # experiments 2 and 3 in the paper
+
+blur_results <- setNames(
+  lapply(
+    experiment_names,
+    analyze_blur_experiment,
+    all_data = all_data,
+    pcThresh = pcThresh
+  ),
+  experiment_names
+)
+
+# Convenient named objects remain available for any later custom analyses.
+Exp1_results <- blur_results$Exp1
+Exp2_results <- blur_results$Exp2
+```
+
+```{r blur-results-output, echo=FALSE, results='asis', warning=FALSE, message=FALSE}
+# Formatting helpers for automatically generated results text.
+format_p <- function(p) {
+  if (is.na(p)) return("NA")
+  if (p < 0.0001) return("< .0001")
+  paste0("= ", sprintf("%.4f", p))
+}
+
+# Extract a Type II Wald test by the variables in the term rather than by
+# row number. This is robust to changes in the order of the ANOVA table.
+get_wald_test <- function(anova_object, variables) {
+  tab <- as.data.frame(anova_object)
+  effects <- rownames(tab)
+
+  normalize_term <- function(x) {
+    x <- gsub("`", "", x)
+    paste(sort(strsplit(x, ":", fixed = TRUE)[[1]]), collapse = ":")
+  }
+
+  effect_keys <- vapply(effects, normalize_term, character(1))
+  target_key <- paste(sort(variables), collapse = ":")
+  row_index <- match(target_key, effect_keys)
+
+  if (is.na(row_index)) {
+    return(list(effect = paste(variables, collapse = ":"),
+                chisq = NA_real_, df = NA_real_, p = NA_real_))
+  }
+
+  chisq_col <- grep("Chisq", names(tab), value = TRUE)[1]
+  df_col    <- grep("^Df$", names(tab), value = TRUE)[1]
+  p_col     <- grep("^Pr", names(tab), value = TRUE)[1]
+
+  list(
+    effect = effects[row_index],
+    chisq = as.numeric(tab[row_index, chisq_col]),
+    df = as.numeric(tab[row_index, df_col]),
+    p = as.numeric(tab[row_index, p_col])
+  )
+}
+
+format_wald <- function(test) {
+  sprintf(
+    "χ²(%d) = %.2f, *p* %s",
+    as.integer(round(test$df)),
+    test$chisq,
+    format_p(test$p)
+  )
+}
+
+# Generate the substantive GLMM results paragraph. In this SDT model,
+# interactions involving signal are the tests of sensitivity (d'), while
+# terms that do not involve signal describe response criterion.
+glm_results_paragraph <- function(res) {
+  blur_test <- get_wald_test(res$anova, c("signal", "diopter"))
+  color_test <- get_wald_test(res$anova, c("signal", "color"))
+  interaction_test <- get_wald_test(
+    res$anova,
+    c("signal", "diopter", "color")
+  )
+
+  # Descriptive direction of the overall blur effect from the model-based
+  # d' estimates, averaged across color conditions.
+  blur_summary <- res$dprime_plot_data %>%
+    group_by(diopter_num) %>%
+    summarise(mean_dprime = mean(estimate), .groups = "drop") %>%
+    arrange(diopter_num)
+
+  declined_with_blur <- nrow(blur_summary) >= 2 &&
+    tail(blur_summary$mean_dprime, 1) < head(blur_summary$mean_dprime, 1)
+
+  # Descriptive direction of the color difference, averaged across tested
+  # blur levels. The formal omnibus test is the signal x color term.
+  color_summary <- res$dprime_plot_data %>%
+    group_by(color) %>%
+    summarise(mean_dprime = mean(estimate), .groups = "drop")
+
+  color_mean <- color_summary$mean_dprime[color_summary$color == "color"]
+  bw_mean <- color_summary$mean_dprime[color_summary$color == "bw"]
+  color_higher <- length(color_mean) == 1 && length(bw_mean) == 1 &&
+    color_mean > bw_mean
+
+  cat(
+    "Statistical inference was based on a binomial generalized linear ",
+    "mixed-effects model fit to trial-level responses using a probit link. ",
+    sep = ""
+  )
+
+  if (!is.na(blur_test$p) && blur_test$p < 0.05) {
+    cat(
+      "Sensitivity varied significantly across blur levels, as indicated ",
+      "by the `signal × diopter` interaction, ",
+      format_wald(blur_test), ". ",
+      sep = ""
+    )
+    if (declined_with_blur) {
+      cat("Inspection of the model-based estimates showed that d' declined overall as blur increased. ")
+    }
+  } else {
+    cat(
+      "There was no significant evidence that sensitivity varied across ",
+      "blur levels (`signal × diopter`), ",
+      format_wald(blur_test), ". ",
+      sep = ""
+    )
+  }
+
+  if (!is.na(color_test$p) && color_test$p < 0.05) {
+    direction <- if (color_higher) {
+      "with greater sensitivity for color than for grayscale images"
+    } else {
+      "with greater sensitivity for grayscale than for color images"
+    }
+    cat(
+      "Sensitivity also differed significantly between color and grayscale ",
+      "images, `signal × color`, ",
+      format_wald(color_test), ", ", direction, ". ",
+      sep = ""
+    )
+  } else {
+    cat(
+      "The overall difference in sensitivity between color and grayscale ",
+      "images was not significant (`signal × color`), ",
+      format_wald(color_test), ". ",
+      sep = ""
+    )
+  }
+
+  if (!is.na(interaction_test$p) && interaction_test$p < 0.05) {
+    cat(
+      "Critically, the `signal × diopter × color` interaction was ",
+      "significant, ", format_wald(interaction_test), ", indicating that ",
+      "the difference in d' between color and grayscale images depended ",
+      "on the level of blur. The grouped-blur post-hoc comparisons below ",
+      "were used to localize this interaction.",
+      sep = ""
+    )
+  } else {
+    cat(
+      "The `signal × diopter × color` interaction was not significant, ",
+      format_wald(interaction_test), ", providing no significant evidence ",
+      "that the color difference in d' changed across blur levels.",
+      sep = ""
+    )
+  }
+
+  cat(
+    " Terms not involving `signal` concern response criterion rather than ",
+    "sensitivity and are reported in the full Wald table below.\n\n",
+    sep = ""
+  )
+}
+
+posthoc_sentence <- function(row, blur_label) {
+  if (is.na(row$p.value)) {
+    conclusion <- "the contrast could not be estimated"
+  } else if (row$p.value < 0.05 && row$estimate > 0) {
+    conclusion <- "d' was significantly greater for color than for grayscale images"
+  } else if (row$p.value < 0.05 && row$estimate < 0) {
+    conclusion <- "d' was significantly greater for grayscale than for color images"
+  } else {
+    conclusion <- "d' did not differ significantly between color and grayscale images"
+  }
+
+  sprintf(
+    "At %s blur, %s, *z* = %.2f, *p* %s.",
+    blur_label,
+    conclusion,
+    row$z.ratio,
+    format_p(row$p.value)
+  )
+}
+
+for (currentExp in names(blur_results)) {
+  res <- blur_results[[currentExp]]
+
+  cat("\n\n## ", currentExp, "\n\n", sep = "")
+
+  cat("### SDT generalized linear mixed-effects model\n\n")
+
+  # Print a narrative summary of the primary sensitivity tests before the
+  # complete Type II Wald table.
+  glm_results_paragraph(res)
+
+  anova_table <- as.data.frame(res$anova)
+  anova_table$Effect <- rownames(anova_table)
+  rownames(anova_table) <- NULL
+  anova_table <- anova_table %>%
+    select(Effect, everything())
+
+  print(
+    kable(
+      anova_table,
+      digits = 4,
+      caption = paste0(
+        currentExp,
+        ": Type II Wald chi-square tests for the trial-level SDT model"
+      )
+    ) %>%
+      kable_styling(full_width = FALSE)
+  )
+
+  cat("\n\n### Model-based sensitivity across blur levels\n\n")
+  cat(
+    "The figure shows model-based d' at each tested blur level for color ",
+    "and grayscale images. Error bars indicate +/- 1 standard error.\n\n",
+    sep = ""
+  )
+  print(res$dprime_plot)
+
+  cat("\n\n### Post-hoc color comparisons within grouped blur levels\n\n")
+
+  print(
+    kable(
+      res$color_results_grouped,
+      digits = 3,
+      caption = paste0(
+        currentExp,
+        ": Difference in d' (color minus grayscale) within grouped blur ",
+        "levels, with Holm-corrected p-values"
+      )
+    ) %>%
+      kable_styling(full_width = FALSE)
+  )
+
+  grouped <- res$color_results_grouped
+  low  <- grouped[grouped$blur_group == "0-2", , drop = FALSE]
+  mid  <- grouped[grouped$blur_group == "3-5", , drop = FALSE]
+  high <- grouped[grouped$blur_group == "6-8", , drop = FALSE]
+
+  cat("\n\n")
+  cat(
+    "Post-hoc interaction contrasts tested whether sensitivity (d') ",
+    "differed between color and grayscale images at low (0–2 diopters), ",
+    "medium (3–5 diopters), and high (6–8 diopters) levels of blur. ",
+    "P-values were adjusted across the three comparisons using the ",
+    "Holm–Bonferroni procedure. ",
+    sep = ""
+  )
+
+  if (nrow(low) == 1) {
+    cat(posthoc_sentence(low, "low"), " ")
+  }
+  if (nrow(mid) == 1) {
+    cat(posthoc_sentence(mid, "medium"), " ")
+  }
+  if (nrow(high) == 1) {
+    cat(posthoc_sentence(high, "high"))
+  }
+  cat("\n\n")
+}
+```
+
+```{r export-statistics, include=FALSE, warning=FALSE, message=FALSE}
+# Export the statistical tables for Exp1 and Exp2 whenever the document is
+# knitted. The preferred output is a multi-sheet Excel workbook. If the
+# openxlsx package is not installed, the same tables are combined into one
+# CSV file, with the source table identified in the first column.
+
+anova_for_export <- function(anova_object) {
+  out <- as.data.frame(anova_object)
+  out$Effect <- rownames(out)
+  rownames(out) <- NULL
+  out <- out %>% select(Effect, everything())
+
+  # Add an interpretation column that distinguishes sensitivity terms from
+  # criterion terms in the SDT model.
+  out <- out %>%
+    mutate(
+      Interpretation = ifelse(
+        grepl("signal", Effect, fixed = TRUE),
+        "Sensitivity (d')",
+        "Response criterion"
+      ),
+      .after = Effect
+    )
+
+  # Use spreadsheet-friendly column names.
+  names(out) <- sub("^Chisq$", "Chi_square", names(out))
+  names(out) <- sub("^Df$", "df", names(out))
+  names(out) <- sub("^Pr\\(>Chisq\\)$", "p_value", names(out))
+  out
+}
+
+experiment_overview_for_export <- function(res) {
+  data.frame(
+    Experiment = res$experiment,
+    Participants = dplyr::n_distinct(res$data$subId),
+    Trials = nrow(res$data),
+    Images = dplyr::n_distinct(res$data$idnum),
+    Diopter_levels = paste(levels(res$data$diopter), collapse = ", "),
+    Primary_model = "resp ~ signal * diopter * color + (1 | subId)",
+    Grouped_model = "resp ~ signal * blur_group * color + (1 | subId)",
+    stringsAsFactors = FALSE
+  )
+}
+
+# Each element becomes a separate worksheet in the Excel file.
+export_tables <- list(
+  Overview = bind_rows(
+    experiment_overview_for_export(Exp1_results),
+    experiment_overview_for_export(Exp2_results)
+  ),
+
+  Exp1_Wald = anova_for_export(Exp1_results$anova),
+  Exp1_Grouped_Wald = anova_for_export(Exp1_results$grouped_anova),
+  Exp1_dprime = as.data.frame(Exp1_results$dprime_plot_data),
+  Exp1_Color_by_Diopter = as.data.frame(
+    Exp1_results$color_results_by_diopter
+  ),
+  Exp1_Color_Grouped = as.data.frame(
+    Exp1_results$color_results_grouped
+  ),
+
+  Exp2_Wald = anova_for_export(Exp2_results$anova),
+  Exp2_Grouped_Wald = anova_for_export(Exp2_results$grouped_anova),
+  Exp2_dprime = as.data.frame(Exp2_results$dprime_plot_data),
+  Exp2_Color_by_Diopter = as.data.frame(
+    Exp2_results$color_results_by_diopter
+  ),
+  Exp2_Color_Grouped = as.data.frame(
+    Exp2_results$color_results_grouped
+  )
+)
+
+excel_file <- file.path(
+  dataDr,
+  "Color_Blur_Statistics_Experiments_1_and_2.xlsx"
+)
+
+csv_file <- file.path(
+  dataDr,
+  "Color_Blur_Statistics_Experiments_1_and_2.csv"
+)
+
+if (requireNamespace("openxlsx", quietly = TRUE)) {
+  openxlsx::write.xlsx(
+    export_tables,
+    file = excel_file,
+    overwrite = TRUE
+  )
+  message("Statistical tables written to: ", excel_file)
+} else {
+  # A CSV cannot have worksheets, so stack the tables while retaining a
+  # Table column identifying the source of every row. bind_rows fills
+  # non-applicable columns with NA.
+  csv_export <- bind_rows(
+    lapply(names(export_tables), function(table_name) {
+      tab <- export_tables[[table_name]]
+      tab[] <- lapply(
+        tab,
+        function(x) if (is.factor(x)) as.character(x) else x
+      )
+      mutate(tab, Table = table_name, .before = 1)
+    })
+  )
+
+  write.csv(csv_export, csv_file, row.names = FALSE, na = "")
+  message(
+    "Package 'openxlsx' was not installed; statistical tables were written ",
+    "to a combined CSV file instead: ", csv_file
+  )
+}
+```
+
+
+```{r}
+exp3_data <- subset(all_data,exp=="Exp3")
+subList <- unique(exp3_data$subId)
+
+for (i in 1:length(subList)) {
+  exp3_sub <- subset(exp3_data, pc>0 &  subId == subList[i])
+  cat(setdiff(unique(exp3_data$idnum),exp3_sub$idnum),'\n')
+}
+
+```
